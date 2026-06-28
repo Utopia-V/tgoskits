@@ -13,7 +13,7 @@
 
 ## 核心主线
 
-本次工作以 Alpine Git 作为真实 Linux app，推动 StarryOS 在 syscall、文件系统、网络 remote、TLS/OpenSSL、socket QoS 等路径上的兼容性补齐。报告中不声称“完整支持 Git”，而是明确覆盖范围：
+本次工作以 Alpine Git 作为真实 Linux app，推动 StarryOS 在 syscall、文件系统、网络 remote、TLS/OpenSSL、socket QoS 等路径上的兼容性补齐。当前材料聚焦已经验证过的范围：
 
 - 本地 Git 主要工作流；
 - `git://` remote 的核心 `ls-remote` / `clone` / `fetch` / `pull` / `push`；
@@ -29,4 +29,3 @@
 - Git HTTPS / loongarch64 LASX：<https://github.com/rcore-os/tgoskits/pull/1178>
 - Git SSH / socket QoS：<https://github.com/rcore-os/tgoskits/pull/1319>
 - 方案三 RGA 探索：<https://github.com/rcore-os/tgoskits/pull/1248>
-

@@ -14,7 +14,7 @@
 | [#1248](https://github.com/rcore-os/tgoskits/pull/1248) | merged | Rockchip RGA dry-run command buffer | 方案三探索，不作为 Git 主线 |
 | [#1319](https://github.com/rcore-os/tgoskits/pull/1319) | merged | Git SSH 触发的 socket QoS 兼容修复 | Git/OpenSSH socket 语义补齐 |
 
-## 相关但不是直接代码贡献的 PR
+## 相关协作 PR
 
 | PR | 作者 | 关系 | 报告表述 |
 | --- | --- | --- | --- |
@@ -33,7 +33,7 @@
 - 触发方式：Git 本地操作中 `git branch -m` / ref rename 相关路径。
 - 问题本质：目录防循环检查用于防止“目录移入自身子树”，但过宽地拦截了普通文件移动到子目录。
 - 修复归属：相关 VFS 修复在 #807 合入；Git 线通过 #1025/#1026 补充 rename 回归和 Git stress 覆盖。
-- 报告口径：这是 Git 真实应用路径暴露的文件系统语义缺口，不能说 #807 是本人直接代码贡献。
+- 公开表述：这是 Git 真实应用路径暴露的文件系统语义缺口；#807 是相关协作修复，Git 线贡献在于补充回归覆盖。
 
 ### loongarch64 LASX 用户态状态保存恢复
 
@@ -52,7 +52,7 @@
 - 修复内容：补 socket option 分发、ax-net per-socket QoS 状态、出站 IPv4/IPv6 header 写入、RX metadata、UDP receive cmsg、`CMsgBuilder` 延迟写回。
 - 验证：`bugfix-bug-socket-qos-options`、`bugfix-bug-recv-qos-cmsg`、Git SSH app、AF_UNIX cmsg 回归。
 
-## 稳妥边界
+## 当前覆盖范围
 
 可以说：
 
@@ -61,10 +61,9 @@
 - 已修复或协同推动修复 Git 路径暴露的文件系统、架构状态、网络 socket 语义问题。
 - 已补齐对应 regression，避免后续回归。
 
-不要说：
+后续边界：
 
-- 完整支持 Git。
-- 完整支持所有 SSH/HTTPS/TLS/认证场景。
-- 完整支持 qdisc/device priority。
-- #807 是本人直接修复。
-
+- Git 仍可继续扩展 SSH 认证矩阵、credential helper、LFS/submodule 等场景。
+- HTTPS/TLS 方向仍可继续覆盖完整 CA trust store、代理认证和更多边界条件。
+- QoS 方向当前聚焦 socket option 可见语义，未扩展到完整 qdisc/device priority 调度模型。
+- #807 作为相关协作修复引用，不归为本人直接代码修改。

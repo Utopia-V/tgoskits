@@ -34,13 +34,19 @@ Git 是一个足够复杂但可确定化测试的 Linux app：
 
 ## 3. 总体路线
 
-1. 方案一：补 syscall 语义测试
-2. 方案二 A：Git 本地工作流
-3. 方案二 B：`git://` remote
-4. 方案二 C：HTTPS smart HTTP remote
-5. 补充：SSH remote 暴露的 socket QoS 语义
+```text
+syscall 基础语义
+        ↓
+Git 本地工作流
+        ↓
+git:// remote
+        ↓
+HTTPS smart HTTP
+        ↓
+SSH / OpenSSH 暴露的 socket QoS 语义
+```
 
-每一步都保持确定性 remote，避免依赖外部公网仓库。
+每一步只推进一个确定路径：先跑通，再把失败缩小成具体内核语义，最后补 regression。
 
 ---
 
@@ -57,7 +63,20 @@ Git 是一个足够复杂但可确定化测试的 Linux app：
 
 ---
 
-## 5. Git 本地工作流
+## 5. Git 覆盖矩阵
+
+| 层次 | 覆盖操作 | 主要验证点 |
+| --- | --- | --- |
+| 本地 Git | 13 个 probe | 文件系统、ref/reflog、rename |
+| `git://` | `clone/fetch/pull/push` | socket、TCP loopback、pack/ref |
+| HTTPS | `clone/fetch/pull/push` | TLS、OpenSSL、Python `ssl` |
+| SSH | `clone/fetch/pull/push` | OpenSSH socket option、QoS cmsg |
+
+这不是用一个命令证明“Git 已支持”，而是把 Git 拆成几层可复现路径。
+
+---
+
+## 6. Git 本地工作流
 
 新增 `stress/git`：
 
@@ -79,7 +98,7 @@ Git 是一个足够复杂但可确定化测试的 Linux app：
 
 ---
 
-## 6. rename 语义问题
+## 7. rename 语义问题
 
 Git ref 操作会触发 rename 路径。
 
@@ -95,7 +114,7 @@ Git ref 操作会触发 rename 路径。
 
 ---
 
-## 7. `git://` remote
+## 8. `git://` remote
 
 在 guest 内启动 `git daemon`：
 
@@ -117,7 +136,7 @@ git://127.0.0.1:9418/src.git
 
 ---
 
-## 8. HTTPS remote
+## 9. HTTPS remote
 
 在 guest 内启动本地 HTTPS smart Git 服务：
 
@@ -133,11 +152,17 @@ git://127.0.0.1:9418/src.git
 
 ---
 
-## 9. LASX bug
+## 10. LASX bug
 
 HTTPS 路径在 loongarch64 上触发 OpenSSL / Python `ssl` 异常。
 
-根因：
+触发链路：
+
+```text
+Git HTTPS -> Python ssl -> OpenSSL -> LASX 向量路径
+```
+
+真正的问题：
 
 - 用户态可能使用 LSX/LASX 向量能力。
 - 内核暴露了能力，但没有完整保存恢复 LASX 256-bit 状态。
@@ -151,7 +176,7 @@ HTTPS 路径在 loongarch64 上触发 OpenSSL / Python `ssl` 异常。
 
 ---
 
-## 10. SSH / QoS bug
+## 11. SSH / QoS bug
 
 OpenSSH client 会设置 `IP_TOS`。
 
@@ -165,7 +190,7 @@ OpenSSH client 会设置 `IP_TOS`。
 
 ---
 
-## 11. `recvmsg` cmsg 细节
+## 12. `recvmsg` cmsg 细节
 
 review 后发现的细节 bug：
 
@@ -174,11 +199,18 @@ review 后发现的细节 bug：
 - 原实现 `CMsgBuilder::new()` 过早清零。
 - `MSG_DONTWAIT` 第一次 `EAGAIN` 后，用户态复用 `msghdr` retry，容量变 0，后续 cmsg 丢失。
 
-修复：内部拆分 `capacity` / `written`，成功路径统一 `finish()` 写回。
+修复：
+
+```text
+capacity = 用户传入的 buffer 容量
+written  = 本次成功写入的 cmsg 长度
+```
+
+成功路径统一 `finish()` 写回，失败路径不破坏用户态 `msghdr`。
 
 ---
 
-## 12. 验证体系
+## 13. 验证体系
 
 测试不是只跑 `git --version`：
 
@@ -195,7 +227,7 @@ review 后发现的细节 bug：
 
 ---
 
-## 13. 当前边界
+## 14. 当前边界
 
 已覆盖：
 
@@ -214,17 +246,16 @@ review 后发现的细节 bug：
 
 ---
 
-## 14. 总结
+## 15. 总结
 
 这条线的价值：
 
 - 用真实 Linux app 牵引 StarryOS 兼容性改进。
-- 不只写测试，也修了架构状态和网络 socket 语义问题。
+- 通过 Git 路径修复了架构状态和网络 socket 语义问题。
 - 每个修复都有 regression。
-- 明确边界，不把未覆盖场景包装成完整支持。
+- 明确当前覆盖范围，也保留后续扩展边界。
 
 后续方向：
 
-- Git 方向可以收束。
-- 方案三继续按“真实应用/硬件路径 -> 最小闭环 -> 回归验证”推进。
-
+- Git 方向后续可以继续补 SSH 认证、credential helper、LFS/submodule 等场景。
+- 方案三继续按“真实路径 -> 最小闭环 -> 回归验证”推进。
