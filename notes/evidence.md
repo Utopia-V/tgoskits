@@ -26,6 +26,20 @@
   - 当前状态为 open，但 body 已标注方案一完成、方案二 Git app 支持完成并合入。
   - Git 方向明确 deferred：SSH 认证矩阵、credential helper、完整 CA/TLS 边界、外部 writable remote、LFS/submodule。
 
+## 方案一 syscall 贡献
+
+| PR | syscall | 可讲重点 |
+| --- | --- | --- |
+| [#670](https://github.com/rcore-os/tgoskits/pull/670) | `eventfd2` | 覆盖 flag、普通计数器/信号量模式、非阻塞、溢出、fork 继承；用于验证事件通知类 fd 的读写和边界行为 |
+| [#683](https://github.com/rcore-os/tgoskits/pull/683) | `signalfd4` | 覆盖 signal mask 和 signalfd 返回信息；修复 `ssi_pid` / `ssi_uid` 硬编码，使信号来源信息更接近 Linux 语义 |
+| [#763](https://github.com/rcore-os/tgoskits/pull/763) | `utimensat` | 覆盖文件时间戳更新、flag 校验、`AT_EMPTY_PATH`；修复对应权限和参数语义 |
+
+这些测例的意义：
+
+- 直接补 StarryOS syscall 兼容测试面。
+- 训练出后续 Git 方向继续使用的方法：从 Linux 语义出发写源码级测例，失败后缩小到具体内核语义，再补 regression。
+- 让报告主线不是单纯“支持 Git”，而是“syscall 基础语义 + 真实 Linux app 驱动的兼容性改进”。
+
 ## 可讲的核心 bug
 
 ### VFS rename 语义缺口

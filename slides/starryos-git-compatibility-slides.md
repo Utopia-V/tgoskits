@@ -63,7 +63,23 @@ SSH / OpenSSH 暴露的 socket QoS 语义
 
 ---
 
-## 5. Git 覆盖矩阵
+## 5. 方案一：syscall 基础语义
+
+| PR | syscall | 重点 |
+| --- | --- | --- |
+| #670 | `eventfd2` | flag、计数器/信号量、非阻塞、溢出、fork 继承 |
+| #683 | `signalfd4` | 信号接收、mask、`ssi_pid` / `ssi_uid` |
+| #763 | `utimensat` | 时间戳更新、flag 校验、`AT_EMPTY_PATH` |
+
+这部分的价值：
+
+- 直接补 StarryOS 的 syscall 兼容测试面。
+- 形成“Linux 语义 -> 源码级测例 -> 内核修复 -> regression”的工作方法。
+- 为后续定位 Git 暴露的问题打基础。
+
+---
+
+## 6. Git 覆盖矩阵
 
 | 层次 | 覆盖操作 | 主要验证点 |
 | --- | --- | --- |
@@ -76,7 +92,7 @@ SSH / OpenSSH 暴露的 socket QoS 语义
 
 ---
 
-## 6. Git 本地工作流
+## 7. Git 本地工作流
 
 新增 `stress/git`：
 
@@ -98,7 +114,7 @@ SSH / OpenSSH 暴露的 socket QoS 语义
 
 ---
 
-## 7. rename 语义问题
+## 8. rename 语义问题
 
 Git ref 操作会触发 rename 路径。
 
@@ -114,7 +130,7 @@ Git ref 操作会触发 rename 路径。
 
 ---
 
-## 8. `git://` remote
+## 9. `git://` remote
 
 在 guest 内启动 `git daemon`：
 
@@ -136,7 +152,7 @@ git://127.0.0.1:9418/src.git
 
 ---
 
-## 9. HTTPS remote
+## 10. HTTPS remote
 
 在 guest 内启动本地 HTTPS smart Git 服务：
 
@@ -152,7 +168,7 @@ git://127.0.0.1:9418/src.git
 
 ---
 
-## 10. LASX bug
+## 11. LASX bug
 
 HTTPS 路径在 loongarch64 上触发 OpenSSL / Python `ssl` 异常。
 
@@ -176,7 +192,7 @@ Git HTTPS -> Python ssl -> OpenSSL -> LASX 向量路径
 
 ---
 
-## 11. SSH / QoS bug
+## 12. SSH / QoS bug
 
 OpenSSH client 会设置 `IP_TOS`。
 
@@ -190,7 +206,7 @@ OpenSSH client 会设置 `IP_TOS`。
 
 ---
 
-## 12. `recvmsg` cmsg 细节
+## 13. `recvmsg` cmsg 细节
 
 review 后发现的细节 bug：
 
@@ -210,7 +226,7 @@ written  = 本次成功写入的 cmsg 长度
 
 ---
 
-## 13. 验证体系
+## 14. 验证体系
 
 测试不是只跑 `git --version`：
 
@@ -227,7 +243,7 @@ written  = 本次成功写入的 cmsg 长度
 
 ---
 
-## 14. 当前边界
+## 15. 当前边界
 
 已覆盖：
 
@@ -246,7 +262,7 @@ written  = 本次成功写入的 cmsg 长度
 
 ---
 
-## 15. 总结
+## 16. 总结
 
 这条线的价值：
 

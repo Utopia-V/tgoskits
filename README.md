@@ -13,8 +13,9 @@
 
 ## 核心主线
 
-本次工作以 Alpine Git 作为真实 Linux app，推动 StarryOS 在 syscall、文件系统、网络 remote、TLS/OpenSSL、socket QoS 等路径上的兼容性补齐。当前材料聚焦已经验证过的范围：
+本次工作先补齐 `eventfd2`、`signalfd4`、`utimensat` 等 syscall 语义测试，再以 Alpine Git 作为真实 Linux app，推动 StarryOS 在文件系统、网络 remote、TLS/OpenSSL、socket QoS 等路径上的兼容性补齐。当前材料聚焦已经验证过的范围：
 
+- `eventfd2` / `signalfd4` / `utimensat` 的源码级 syscall 测例和相关语义修复；
 - 本地 Git 主要工作流；
 - `git://` remote 的核心 `ls-remote` / `clone` / `fetch` / `pull` / `push`；
 - HTTPS smart HTTP remote 的核心 `ls-remote` / `clone` / `fetch` / `pull` / `push`；
@@ -24,6 +25,9 @@
 ## 主要证据
 
 - 跟踪 issue：<https://github.com/rcore-os/tgoskits/issues/579>
+- `eventfd2` syscall 测例：<https://github.com/rcore-os/tgoskits/pull/670>
+- `signalfd4` syscall 测例与信号信息修复：<https://github.com/rcore-os/tgoskits/pull/683>
+- `utimensat` syscall 测例与语义修复：<https://github.com/rcore-os/tgoskits/pull/763>
 - Git 本地：<https://github.com/rcore-os/tgoskits/pull/1026>
 - Git `git://` remote：<https://github.com/rcore-os/tgoskits/pull/1169>
 - Git HTTPS / loongarch64 LASX：<https://github.com/rcore-os/tgoskits/pull/1178>
