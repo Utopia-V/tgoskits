@@ -38,7 +38,7 @@
 
 - 直接补 StarryOS syscall 兼容测试面。
 - 训练出后续 Git 方向继续使用的方法：从 Linux 语义出发写源码级测例，失败后缩小到具体内核语义，再补 regression。
-- 让报告主线不是单纯“支持 Git”，而是“syscall 基础语义 + 真实 Linux app 驱动的兼容性改进”。
+- 报告主线按“syscall 基础语义 + Git 应用路径”展开，避免只写成 Git 进度记录。
 
 ## 可讲的核心 bug
 

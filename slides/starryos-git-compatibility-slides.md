@@ -34,7 +34,7 @@ HTTPS smart HTTP
 SSH / OpenSSH
 ```
 
-方法：真实应用失败 -> 缩小成内核语义 -> 修复 -> regression。
+基本做法：先让一个确定场景跑起来，失败后再缩小到具体内核行为。
 
 ---
 
@@ -60,7 +60,7 @@ SSH / OpenSSH
 | `signalfd4` | signal mask、返回信息字段、`ssi_pid` / `ssi_uid` |
 | `utimensat` | 时间戳更新、flag 校验、`AT_EMPTY_PATH` |
 
-这部分建立了后续工作的基本方法：
+这部分先把调试方法练清楚：
 
 Linux 语义 -> 源码级测例 -> StarryOS 差异 -> 内核修复 -> 回归测试。
 
@@ -75,7 +75,7 @@ Linux 语义 -> 源码级测例 -> StarryOS 差异 -> 内核修复 -> 回归测�
 | HTTPS | `clone/fetch/pull/push` | TLS、OpenSSL、Python `ssl` |
 | SSH | `clone/fetch/pull/push` | OpenSSH socket option、QoS cmsg |
 
-重点不是“一个命令跑通”，而是把 Git 拆成可复现、可定位的路径。
+这样拆开以后，每一层失败时更容易定位。
 
 ---
 
@@ -104,7 +104,7 @@ HTTPS     -> Python ssl + git http-backend
 SSH       -> guest 内 sshd + Git client
 ```
 
-好处：
+这样设计主要是为了：
 
 - 不依赖公网仓库
 - 不依赖外部 writable remote
@@ -176,7 +176,7 @@ Git SSH / OpenSSH 暴露 socket option 缺口：
 
 ---
 
-## 11. 达到的效果
+## 11. 现在能跑到什么程度
 
 已覆盖：
 
@@ -192,7 +192,7 @@ Git SSH / OpenSSH 暴露 socket option 缺口：
 
 ---
 
-## 12. 当前边界
+## 12. 还没覆盖的部分
 
 当前覆盖的是 Alpine Git 的主要路径：
 
@@ -211,7 +211,7 @@ Git SSH / OpenSSH 暴露 socket option 缺口：
 
 ---
 
-## 13. 经验
+## 13. 一些经验
 
 1. syscall 测例适合建立基础语义判断。
 2. 真实应用适合暴露跨模块问题。
@@ -222,11 +222,11 @@ Git SSH / OpenSSH 暴露 socket option 缺口：
 
 ## 14. 总结
 
-这次工作不是实现 Git 本身。
+这次工作是从 syscall 测例开始，逐步走到 Git 这种真实应用。
 
-核心价值是：
+比较有收获的部分：
 
-- 用 syscall 测例打基础；
-- 用 Git 牵引真实 Linux app 路径；
-- 修复架构状态、网络 socket、cmsg 等实际兼容问题；
-- 把问题沉淀成可持续运行的 regression。
+- syscall 测例适合把语义边界缩小；
+- Git 会把文件系统、网络、TLS、架构状态串起来；
+- 每次修复都尽量留下 regression；
+- 之后类似 app 可以继续按这个方式拆。
