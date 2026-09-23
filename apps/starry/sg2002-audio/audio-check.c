@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <poll.h>
+#include <sched.h>
 #include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -167,6 +168,27 @@ static void interrupt_read(int signal_number)
     (void)signal_number;
 }
 
+static void wait_for_sleep(pid_t child)
+{
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%ld/status", (long)child);
+    int64_t deadline = monotonic_ms() + 3000;
+    for (;;) {
+        FILE *file = fopen(path, "r");
+        CHECK(file != NULL);
+        char line[128], state = 0;
+        while (fgets(line, sizeof(line), file)) {
+            if (sscanf(line, "State: %c", &state) == 1)
+                break;
+        }
+        fclose(file);
+        if (state == 'S')
+            return;
+        CHECK(state != 'Z' && state != 'X' && monotonic_ms() < deadline);
+        sched_yield();
+    }
+}
+
 static void check_blocking_and_overrun(int fd, unsigned rate)
 {
     struct snd_pcm_sw_params sw = {
@@ -187,6 +209,30 @@ static void check_blocking_and_overrun(int fd, unsigned rate)
     CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_READI_FRAMES, &transfer) < 0 && errno == EINTR);
     CHECK(transfer.result == -EINTR);
     CHECK(sigaction(SIGALRM, &previous, NULL) == 0);
+    for (int free_params = 0; free_params < 2; ++free_params) {
+        CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_SW_PARAMS, &sw) == 0);
+        CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_PREPARE, NULL) == 0);
+        pid_t reader = fork();
+        CHECK(reader >= 0);
+        if (reader == 0) {
+            alarm(5);
+            int result = pcm_ioctl(fd, SNDRV_PCM_IOCTL_READI_FRAMES, &transfer);
+            _exit(result < 0 && errno == EBADFD && transfer.result == -EBADFD ? 0 : 1);
+        }
+        // No DMA is running: only a parameter-state change can release this read.
+        wait_for_sleep(reader);
+        if (free_params) {
+            CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_HW_FREE, NULL) == 0);
+        } else {
+            struct snd_pcm_hw_params params = hardware_params(rate);
+            CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_HW_PARAMS, &params) == 0);
+        }
+        int status;
+        CHECK(waitpid(reader, &status, 0) == reader);
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        configure(fd, rate);
+    }
+    CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_SW_PARAMS, &sw) == 0);
     alarm(6);
     // Explicit START; each read is smaller than poll's avail_min.
     capture_one_second(fd, rate);
@@ -197,6 +243,57 @@ static void check_blocking_and_overrun(int fd, unsigned rate)
     CHECK(poll(&wait, 1, 6000) > 0 && (wait.revents & POLLERR));
     CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_READI_FRAMES, &transfer) < 0 && errno == EPIPE);
     CHECK(transfer.result == -EPIPE);
+    CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_DRAIN, NULL) < 0 && errno == EAGAIN);
+    struct snd_pcm_status status = {0};
+    CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_STATUS, &status) == 0);
+    CHECK(status.state == SNDRV_PCM_STATE_XRUN);
+    CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_READI_FRAMES, &transfer) < 0 && errno == EPIPE);
+    CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_DROP, NULL) == 0);
+    configure(fd, rate);
+}
+
+static void check_drain(int fd)
+{
+    int16_t samples[BUFFER_FRAMES];
+    for (int discard = 0; discard < 2; ++discard) {
+        start_capture(fd);
+        struct pollfd ready = { .fd = fd, .events = POLLIN };
+        CHECK(poll(&ready, 1, 6000) > 0 && ready.revents == POLLIN);
+        if (discard)
+            CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_DROP, NULL) == 0);
+        CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_DRAIN, NULL) < 0 && errno == EAGAIN);
+        struct snd_pcm_status status = {0};
+        CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_STATUS, &status) == 0);
+        CHECK(status.state == (discard ? SNDRV_PCM_STATE_SETUP : SNDRV_PCM_STATE_DRAINING));
+        struct snd_xferi transfer = { .buf = samples, .frames = BUFFER_FRAMES };
+        int result = pcm_ioctl(fd, SNDRV_PCM_IOCTL_READI_FRAMES, &transfer);
+        if (discard)
+            CHECK(result < 0 && errno == EBADFD);
+        else
+            CHECK(result == 0 && transfer.result > 0 && transfer.result < BUFFER_FRAMES);
+        CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_STATUS, &status) == 0);
+        CHECK(status.state == SNDRV_PCM_STATE_SETUP);
+    }
+}
+
+static void check_geometry(int fd, unsigned rate)
+{
+    struct snd_pcm_hw_params params = hardware_params(rate);
+    set_interval(&params, SNDRV_PCM_HW_PARAM_PERIOD_SIZE, 64);
+    set_interval(&params, SNDRV_PCM_HW_PARAM_BUFFER_SIZE, 128);
+    CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_HW_REFINE, &params) < 0 && errno == EINVAL);
+    set_interval(&params, SNDRV_PCM_HW_PARAM_BUFFER_SIZE, 192);
+    CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_HW_PARAMS, &params) == 0);
+    start_capture(fd);
+    // Exercise repeated wraps at the smallest serviceable DMA geometry.
+    for (int period = 0; period < 16; ++period) {
+        struct pollfd ready = { .fd = fd, .events = POLLIN };
+        CHECK(poll(&ready, 1, 3000) > 0 && ready.revents == POLLIN);
+        int16_t samples[64];
+        struct snd_xferi transfer = { .buf = samples, .frames = 64 };
+        CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_READI_FRAMES, &transfer) == 0 && transfer.result == 64);
+    }
+    CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_DROP, NULL) == 0);
     configure(fd, rate);
 }
 
@@ -277,6 +374,8 @@ static void lifecycle(unsigned rate)
     CHECK(syscall(SYS_read, fd, sample, 1) < 0 && errno == EINVAL);
     struct iovec channel = { .iov_base = sample, .iov_len = sizeof(sample) };
     CHECK(syscall(SYS_readv, fd, &channel, 1) < 0 && errno == EINVAL);
+    check_geometry(fd, rate);
+    check_drain(fd);
     check_blocking_and_overrun(fd, rate);
     capture_one_second(fd, rate);
     capture_one_second(fd, rate);
@@ -294,12 +393,27 @@ int main(int argc, char **argv)
         puts("ALSA_LP64_LAYOUT_OK");
         return 0;
     }
-    if (argc != 3 || strcmp(argv[1], "--lifecycle") != 0 ||
+    if (argc != 3 ||
+        (strcmp(argv[1], "--lifecycle") != 0 && strcmp(argv[1], "--blocking") != 0 &&
+         strcmp(argv[1], "--drain") != 0 && strcmp(argv[1], "--geometry") != 0) ||
         (strcmp(argv[2], "16000") != 0 && strcmp(argv[2], "48000") != 0)) {
-        fprintf(stderr, "Usage: %s --abi-check | --lifecycle {16000|48000}\n", argv[0]);
+        fprintf(stderr, "Usage: %s --abi-check | {--lifecycle|--blocking|--drain|--geometry} {16000|48000}\n", argv[0]);
         return 2;
     }
-    lifecycle(strcmp(argv[2], "16000") == 0 ? 16000 : 48000);
+    unsigned rate = strcmp(argv[2], "16000") == 0 ? 16000 : 48000;
+    if (strcmp(argv[1], "--lifecycle") == 0) {
+        lifecycle(rate);
+    } else {
+        int fd = open_capture();
+        configure(fd, rate);
+        if (strcmp(argv[1], "--blocking") == 0)
+            check_blocking_and_overrun(fd, rate);
+        else if (strcmp(argv[1], "--drain") == 0)
+            check_drain(fd);
+        else
+            check_geometry(fd, rate);
+        close(fd);
+    }
     puts("SG2002_AUDIO_PASSED");
     return 0;
 }

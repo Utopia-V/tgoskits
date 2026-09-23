@@ -178,5 +178,17 @@ mod tests {
             Err(Error::Overrun)
         ));
         assert_eq!(cursor.frames, 1152);
+
+        // Every accepted ring must permit an observation at the first period
+        // interrupt, rounded up to the next nanosecond, without an ambiguous lap.
+        for config in Config::supported() {
+            let mut cursor = Cursor::default();
+            let period_ns =
+                (u64::from(config.period_frames) * 1_000_000_000).div_ceil(u64::from(config.rate));
+            cursor
+                .advance(config.period_frames, period_ns, config)
+                .expect("accepted geometry must allow one period of progress");
+            assert_eq!(cursor.frames, u64::from(config.period_frames));
+        }
     }
 }
