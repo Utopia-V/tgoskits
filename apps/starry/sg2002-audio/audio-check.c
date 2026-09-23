@@ -245,10 +245,6 @@ static void check_blocking_and_overrun(int fd, unsigned rate)
         struct snd_pcm_status state = {0};
         CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_STATUS, &state) == 0);
         CHECK(state.state == (change == 0 ? SNDRV_PCM_STATE_SETUP : SNDRV_PCM_STATE_OPEN));
-        struct pollfd ready = { .fd = fd, .events = POLLIN | POLLRDNORM };
-        struct timespec immediate = {0};
-        CHECK(syscall(SYS_ppoll, &ready, 1, &immediate, NULL, 0) == 1);
-        CHECK(ready.revents == (POLLIN | POLLRDNORM | POLLERR));
         pid_t children[] = { reader, selector };
         for (size_t i = 0; i < sizeof(children) / sizeof(children[0]); ++i) {
             int status;
@@ -259,6 +255,10 @@ static void check_blocking_and_overrun(int fd, unsigned rate)
             CHECK(reaped == children[i]);
             CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
         }
+        struct pollfd ready = { .fd = fd, .events = POLLIN | POLLRDNORM };
+        struct timespec immediate = {0};
+        CHECK(syscall(SYS_ppoll, &ready, 1, &immediate, NULL, 0) == 1);
+        CHECK(ready.revents == (POLLIN | POLLRDNORM | POLLERR));
         configure(fd, rate);
     }
     CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_SW_PARAMS, &sw) == 0);
