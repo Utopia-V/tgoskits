@@ -4,7 +4,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    process::{Command, Output, Stdio},
+    process::{Command, Output},
     rc::Rc,
     time::Duration,
 };
@@ -370,30 +370,21 @@ fn run_command(mut command: Command, context: &str) -> Output {
 }
 
 fn run_debugfs_script(image: &Path, script: &str, context: &str) {
-    let mut child = Command::new("debugfs")
-        .arg("-w")
-        .arg(image)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap_or_else(|err| panic!("failed to spawn debugfs for {context}: {err}"));
-
-    {
-        let mut stdin = child.stdin.take().expect("debugfs stdin");
-        stdin
-            .write_all(script.as_bytes())
-            .unwrap_or_else(|err| panic!("failed to write debugfs script for {context}: {err}"));
-    }
-
-    let output = child
-        .wait_with_output()
-        .unwrap_or_else(|err| panic!("failed to wait for debugfs {context}: {err}"));
-    assert!(
-        output.status.success(),
-        "debugfs {context} failed\n{}",
-        command_text(&output)
+    // debugfs echoes commands. File input lets output() drain both output
+    // pipes without a competing stdin writer filling the opposite pipe.
+    let script_path = image.with_extension("debugfs");
+    fs::write(&script_path, script)
+        .unwrap_or_else(|err| panic!("failed to write debugfs script for {context}: {err}"));
+    run_command(
+        {
+            let mut command = Command::new("debugfs");
+            command.args(["-w", "-f"]).arg(&script_path).arg(image);
+            command
+        },
+        &format!("debugfs {context}"),
     );
+    fs::remove_file(&script_path)
+        .unwrap_or_else(|err| panic!("failed to remove debugfs script for {context}: {err}"));
 }
 
 fn debugfs_query(image: &Path, request: &str) -> String {
