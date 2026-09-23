@@ -43,7 +43,7 @@ arecord -D hw:0,0 -c 1 -f S16_LE -r 48000 -d 5 -t wav mic-48k.wav
 
 ### 2.2 生命周期
 
-`lifecycle()` 检查增益改变及恢复、立体声拒绝、不完整帧和非交错 `readv` 拒绝、第二次打开返回 `EBUSY`、停止重启，以及 `dup/fork` 共享会话后由进程退出释放活动采集。`check_blocking_and_overrun()` 检查非阻塞 `EAGAIN`、信号打断、读取量小于 `avail_min` 时的进展，以及缓冲区溢出的 `POLLERR/EPIPE` 与重新配置。`capture_one_second()` 处理短读、非阻塞等待和超时，再检查 `SYNC_PTR/STATUS`；失败立即退出，由进程退出路径释放描述符。
+`lifecycle()` 检查增益改变及恢复、立体声拒绝、不完整帧和非交错 `readv` 拒绝、第二次打开返回 `EBUSY`、停止重启，以及 `dup/fork` 共享会话后由进程退出释放活动采集。`check_blocking_and_overrun()` 检查非阻塞 `EAGAIN`、信号打断、读取量小于 `avail_min` 时的进展、参数变更后阻塞读与 `select` 的唤醒，以及溢出的 `POLLERR/EPIPE` 与重新配置。`check_drain()` 区分已在进行的读取和排空后新发起的读取，检查停止、溢出后的数据不被恢复。`check_geometry()` 验证最小可用 DMA 环的多次回绕。`capture_one_second()` 处理短读、非阻塞等待和超时，再检查 `SYNC_PTR/STATUS`；失败立即退出，由进程退出路径释放描述符。
 
 ```sh
 timeout 30 ./sg2002-audio-check --lifecycle 16000
@@ -51,6 +51,8 @@ timeout 30 ./sg2002-audio-check --lifecycle 48000
 ```
 
 全部步骤成功才输出 `SG2002_AUDIO_PASSED`；断言失败输出 `SG2002_AUDIO_FAILED` 并返回非零。阻塞录音由进程定时信号限时，外层超时拦截内核调用挂起；任一非零退出均由板卡运行器判失败。缺少设备节点时必须失败。上述命令要求板端提供 `timeout`。生命周期诊断不检查音质；持续采集、冷启动瞬态和受控声源仍需单独验证。
+
+需要定向诊断时，可将 `--lifecycle` 替换为 `--blocking`、`--drain` 或 `--geometry`，分别只运行对应检查；采样率参数保持不变。
 
 ### 2.3 板卡运行器
 

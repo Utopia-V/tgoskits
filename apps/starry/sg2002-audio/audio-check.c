@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/select.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #include <sys/wait.h>
@@ -221,8 +222,19 @@ static void check_blocking_and_overrun(int fd, unsigned rate)
             _exit(result < 0 && errno == EBADFD &&
                   (change == 1 || transfer.result == -EBADFD) ? 0 : 1);
         }
+        pid_t selector = fork();
+        CHECK(selector >= 0);
+        if (selector == 0) {
+            alarm(5);
+            fd_set readable;
+            FD_ZERO(&readable);
+            FD_SET(fd, &readable);
+            long result = syscall(SYS_pselect6, fd + 1, &readable, NULL, NULL, NULL, NULL);
+            _exit(result == 1 && FD_ISSET(fd, &readable) ? 0 : 1);
+        }
         // No DMA is running: only a parameter-state change can release this read.
         wait_for_sleep(reader);
+        wait_for_sleep(selector);
         if (change == 1) {
             CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_HW_FREE, NULL) == 0);
         } else {
@@ -233,13 +245,20 @@ static void check_blocking_and_overrun(int fd, unsigned rate)
         struct snd_pcm_status state = {0};
         CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_STATUS, &state) == 0);
         CHECK(state.state == (change == 0 ? SNDRV_PCM_STATE_SETUP : SNDRV_PCM_STATE_OPEN));
-        int status;
-        pid_t reaped;
-        do {
-            reaped = waitpid(reader, &status, 0);
-        } while (reaped < 0 && errno == EINTR);
-        CHECK(reaped == reader);
-        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        struct pollfd ready = { .fd = fd, .events = POLLIN | POLLRDNORM };
+        struct timespec immediate = {0};
+        CHECK(syscall(SYS_ppoll, &ready, 1, &immediate, NULL, 0) == 1);
+        CHECK(ready.revents == (POLLIN | POLLRDNORM | POLLERR));
+        pid_t children[] = { reader, selector };
+        for (size_t i = 0; i < sizeof(children) / sizeof(children[0]); ++i) {
+            int status;
+            pid_t reaped;
+            do {
+                reaped = waitpid(children[i], &status, 0);
+            } while (reaped < 0 && errno == EINTR);
+            CHECK(reaped == children[i]);
+            CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        }
         configure(fd, rate);
     }
     CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_SW_PARAMS, &sw) == 0);
@@ -264,6 +283,27 @@ static void check_drain(int fd)
 {
     int16_t samples[BUFFER_FRAMES];
     CHECK(fcntl(fd, F_SETFL, 0) == 0);
+    start_capture(fd);
+    struct pollfd readable = { .fd = fd, .events = POLLIN };
+    CHECK(poll(&readable, 1, 3000) > 0 && readable.revents == POLLIN);
+    pid_t reader = fork();
+    CHECK(reader >= 0);
+    if (reader == 0) {
+        alarm(5);
+        struct snd_xferi transfer = { .buf = samples, .frames = BUFFER_FRAMES };
+        int result = pcm_ioctl(fd, SNDRV_PCM_IOCTL_READI_FRAMES, &transfer);
+        _exit(result == 0 && transfer.result > 0 && transfer.result < BUFFER_FRAMES ? 0 : 1);
+    }
+    wait_for_sleep(reader);
+    struct snd_pcm_status progress = {0};
+    CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_STATUS, &progress) == 0);
+    CHECK(progress.appl_ptr > 0); // The read has copied data and is waiting for more.
+    CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_DRAIN, NULL) == 0);
+    int child_status;
+    pid_t waited;
+    do { waited = waitpid(reader, &child_status, 0); } while (waited < 0 && errno == EINTR);
+    CHECK(waited == reader && WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0);
+    CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_DROP, NULL) == 0);
     for (int scenario = 0; scenario < 3; ++scenario) {
         start_capture(fd);
         struct pollfd ready = { .fd = fd, .events = scenario == 2 ? 0 : POLLIN };
@@ -278,14 +318,12 @@ static void check_drain(int fd)
         CHECK(status.state == states[scenario]);
         struct snd_xferi transfer = { .buf = samples, .frames = BUFFER_FRAMES };
         int result = pcm_ioctl(fd, SNDRV_PCM_IOCTL_READI_FRAMES, &transfer);
-        if (scenario == 0)
-            CHECK(result == 0 && transfer.result > 0 && transfer.result < BUFFER_FRAMES);
-        else
-            CHECK(result < 0 && errno == (scenario == 1 ? EBADFD : EPIPE));
-        if (scenario == 2)
-            CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_DROP, NULL) == 0);
+        int error = scenario == 2 ? EPIPE : EBADFD;
+        CHECK(result < 0 && errno == error && transfer.result == -error);
+        CHECK(syscall(SYS_read, fd, samples, sizeof(samples)) < 0 && errno == error);
         CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_STATUS, &status) == 0);
-        CHECK(status.state == SNDRV_PCM_STATE_SETUP);
+        CHECK(status.state == states[scenario]);
+        CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_DROP, NULL) == 0);
     }
     CHECK(fcntl(fd, F_SETFL, O_NONBLOCK) == 0);
     CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_DRAIN, NULL) < 0 && errno == EAGAIN);

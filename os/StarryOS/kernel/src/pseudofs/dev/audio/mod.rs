@@ -129,10 +129,12 @@ impl Stream {
 
     fn readiness(&mut self) -> IoEvents {
         self.update();
+        let readable = IoEvents::IN | IoEvents::RDNORM;
         match self.state {
-            State::Open | State::Setup | State::Xrun => IoEvents::ERR,
-            State::Draining => IoEvents::IN,
-            _ if self.available() >= self.sw.avail_min => IoEvents::IN,
+            State::Open | State::Setup | State::Xrun => readable | IoEvents::ERR,
+            State::Draining if self.available() == 0 => readable | IoEvents::ERR,
+            State::Draining => readable,
+            _ if self.available() >= self.sw.avail_min => readable,
             _ => IoEvents::empty(),
         }
     }
@@ -220,7 +222,9 @@ impl AudioFile {
         stream.update();
         match stream.state {
             State::Xrun => return Err(StarryError::BrokenPipe),
-            State::Open | State::Setup => return Err(syscalls::Errno::EBADFD.into()),
+            State::Open | State::Setup | State::Draining => {
+                return Err(syscalls::Errno::EBADFD.into());
+            }
             State::Prepared if frames as u64 >= stream.sw.start_threshold => stream.start()?,
             _ => (),
         }
@@ -233,13 +237,15 @@ impl AudioFile {
                 match stream.state {
                     State::Xrun => return Err(StarryError::BrokenPipe),
                     State::Open | State::Setup => return Err(syscalls::Errno::EBADFD.into()),
+                    State::Draining => {
+                        // DRAIN completes an in-flight read, but never admits a
+                        // new one. Linux wait_for_avail ends capture draining.
+                        stream.state = State::Setup;
+                        return Ok(0);
+                    }
                     _ => (),
                 }
                 let count = (stream.available() as usize).min(frames - done).min(512);
-                if count == 0 && stream.state == State::Draining {
-                    stream.state = State::Setup;
-                    return Ok(0);
-                }
                 if count == 0 {
                     return Err(StarryError::WouldBlock);
                 }

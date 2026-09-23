@@ -28,7 +28,7 @@ StarryOS 的 `sg2002-audio` feature 启用设备探测和 ALSA 兼容入口。�
 
 `AudioFile` 是打开文件描述的所有者：一个独立采集打开占用设备，另一个返回 `EBUSY`；`dup` 和 `fork` 共享同一个 `Arc`，最后引用关闭时停止采集。`Stream` 维护参数、状态、硬件进度和应用进度，支持参数协商、准备、启动、读取、停止、排空和溢出后的重新准备。
 
-参数重设或释放后，`Card::change_stream` 在解锁后通知等待者，使未启动 DMA 的阻塞读取也能观察到状态变化。`HW_PARAMS` 在允许配置的状态下失败会撤销旧参数并回到 `Open`。捕获 `DRAIN` 只将运行中的剩余数据置为可排空，不恢复 `DROP` 或溢出后丢弃的数据；非阻塞调用在完成状态操作后返回 `EAGAIN`。
+参数重设或释放后，`Card::change_stream` 在解锁后通知等待者，使未启动 DMA 的阻塞读取也能观察到状态变化。捕获终态同时报告可读和错误事件，供 `poll/select` 返回后查询状态。`HW_PARAMS` 在允许配置的状态下失败会撤销旧参数并回到 `Open`。捕获 `DRAIN` 只停止运行中的流；有余量时进入 `Draining`，不恢复 `DROP` 或溢出后丢弃的数据。已在进行的阻塞读取可以短读结束，`Draining` 状态下新发起的读取返回 `EBADFD`；非阻塞 `DRAIN` 在完成状态操作后返回 `EAGAIN`。
 
 `pcmC0D0c` 提供交错帧读取、状态、`SYNC_PTR` 和 `poll`；`controlC0` 提供声卡查询及单值 `ADC Capture Volume`。不提供非交错 `readv`、音频 mmap、播放、混音、重采样或 control 事件订阅。硬中断只通知固定服务线程，读者唤醒在任务上下文执行。用法和板测入口见 [录音诊断](../../../apps/starry/sg2002-audio/README.md)。
 
