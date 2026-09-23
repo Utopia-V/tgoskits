@@ -5,7 +5,7 @@ use crate::{Config, Error, Shared};
 
 // Channel error status, excluding transaction/period completion and suspend.
 pub(super) const ERRORS: u64 = 0x0001_7fe0 | (1 << 31);
-const BLOCK_BYTES: usize = 128; // Hardware maximum: 32 transfers * 4 bytes.
+const BLOCK_BYTES: usize = Config::DMA_BLOCK_FRAMES as usize * 2;
 
 #[derive(Clone, Copy, Default)]
 #[repr(C, align(64))]
@@ -145,8 +145,8 @@ impl Cursor {
     pub fn advance(&mut self, position: u32, now_ns: u64, config: Config) -> Result<(), Error> {
         let elapsed = now_ns.checked_sub(self.last_ns).ok_or(Error::Overrun)?;
         // Subtract one DMA block for the unobserved partial block at last sample.
-        let safe_gap =
-            u64::from(config.buffer_frames - 64) * 1_000_000_000 / u64::from(config.rate);
+        let safe_gap = u64::from(config.buffer_frames - Config::DMA_BLOCK_FRAMES) * 1_000_000_000
+            / u64::from(config.rate);
         if elapsed >= safe_gap {
             return Err(Error::Overrun);
         }

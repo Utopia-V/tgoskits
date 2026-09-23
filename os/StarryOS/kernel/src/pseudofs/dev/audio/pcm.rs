@@ -4,8 +4,8 @@ use alsa_pcm_uapi::{
 use bytemuck::Zeroable;
 use syscalls::Errno;
 
-use super::{AudioFile, State, map_error, params, pcm_info};
-use crate::{StarryError, StarryResult, mm::UserPtr, task::UserTaskRef};
+use super::{AudioFile, State, Stream, map_error, params, pcm_info};
+use crate::{StarryError, StarryResult, file::FileLike, mm::UserPtr, task::UserTaskRef};
 
 impl AudioFile {
     pub(super) fn pcm_ioctl(
@@ -26,47 +26,19 @@ impl AudioFile {
                 if cmd == ioctl::HW_REFINE {
                     params::refine(&mut params)?;
                 } else {
-                    let config = params::configure(&mut params)?;
-                    let mut stream = self.card.inner.lock();
-                    if matches!(stream.state, State::Running | State::Draining) {
-                        return Err(StarryError::ResourceBusy);
-                    }
-                    if stream.state == State::Prepared {
-                        stream.state = State::Setup;
-                    }
-                    stream.capture.configure(config).map_err(map_error)?;
-                    stream.config = Some(config);
-                    stream.state = State::Setup;
-                    stream.produced = 0;
-                    stream.consumed = 0;
-                    stream.origin = 0;
-                    let frames = u64::from(config.buffer_frames);
-                    let mut boundary = frames;
-                    while boundary <= (i64::MAX as u64 - frames) / 2 {
-                        boundary *= 2;
-                    }
-                    stream.sw = SwParams {
-                        tstamp_type: stream.sw.tstamp_type,
-                        period_step: 1,
-                        avail_min: u64::from(config.period_frames),
-                        start_threshold: 1,
-                        stop_threshold: frames,
-                        boundary,
-                        ..SwParams::zeroed()
-                    };
+                    self.card.change_stream(|stream| stream.configure(&mut params))?;
                 }
                 ptr.write(current, params)?;
             }
-            ioctl::HW_FREE => {
-                let mut stream = self.card.inner.lock();
+            ioctl::HW_FREE => self.card.change_stream(|stream| {
                 if !matches!(stream.state, State::Setup | State::Prepared) {
                     return Err(Errno::EBADFD.into());
                 }
-                stream.state = State::Setup;
-                stream.capture.release().map_err(map_error)?;
+                let result = stream.capture.release().map_err(map_error);
                 stream.config = None;
                 stream.state = State::Open;
-            }
+                result
+            })?,
             ioctl::SW_PARAMS => {
                 let ptr = UserPtr::<SwParams>::from(arg);
                 let mut requested = ptr.read(current)?;
@@ -110,8 +82,7 @@ impl AudioFile {
                     stream.sw.tstamp_type = value as u32;
                 }
             }
-            ioctl::PREPARE => {
-                let mut stream = self.card.inner.lock();
+            ioctl::PREPARE => self.card.change_stream(|stream| {
                 if stream.state == State::Open {
                     return Err(Errno::EBADFD.into());
                 }
@@ -131,27 +102,34 @@ impl AudioFile {
                 stream.origin = 0;
                 stream.avail_max = 0;
                 stream.trigger = Timespec::zeroed();
-            }
+                Ok(())
+            })?,
             ioctl::START => self.card.inner.lock().start()?,
             ioctl::DROP | ioctl::DRAIN => {
-                let mut stream = self.card.inner.lock();
-                if stream.state == State::Open {
-                    return Err(Errno::EBADFD.into());
+                self.card.change_stream(|stream| {
+                    if stream.state == State::Open {
+                        return Err(Errno::EBADFD.into());
+                    }
+                    stream.update();
+                    // Capture DRAIN only stops a running stream. In particular,
+                    // DROP and XRUN data must never become readable again.
+                    if cmd == ioctl::DRAIN && stream.state != State::Running {
+                        return Ok(());
+                    }
+                    if let Err(error) = stream.capture.stop() {
+                        stream.state = State::Xrun;
+                        return Err(map_error(error));
+                    }
+                    stream.state = if cmd == ioctl::DRAIN && stream.available() != 0 {
+                        State::Draining
+                    } else {
+                        State::Setup
+                    };
+                    Ok(())
+                })?;
+                if cmd == ioctl::DRAIN && self.nonblocking() {
+                    return Err(StarryError::WouldBlock);
                 }
-                stream.update();
-                if let Err(error) = stream.capture.stop() {
-                    stream.state = State::Xrun;
-                    drop(stream);
-                    self.card.wake_waiters();
-                    return Err(map_error(error));
-                }
-                stream.state = if cmd == ioctl::DRAIN && stream.available() != 0 {
-                    State::Draining
-                } else {
-                    State::Setup
-                };
-                drop(stream);
-                self.card.wake_waiters();
             }
             ioctl::RESET => {
                 let mut stream = self.card.inner.lock();
@@ -276,5 +254,50 @@ impl AudioFile {
             _ => return Err(StarryError::NotATty),
         }
         Ok(0)
+    }
+}
+
+impl Stream {
+    fn configure(&mut self, params: &mut HwParams) -> StarryResult {
+        if !matches!(self.state, State::Open | State::Setup | State::Prepared) {
+            return Err(Errno::EBADFD.into());
+        }
+        let configured = params::configure(params).and_then(|config| {
+            self.capture.configure(config).map_err(map_error)?;
+            Ok(config)
+        });
+        let config = match configured {
+            Ok(config) => config,
+            Err(error) => {
+                // Like snd_pcm_hw_params, a failed transaction discards the old
+                // setup. Capture::release quarantines DMA if stopping fails.
+                if let Err(release_error) = self.capture.release() {
+                    warn!("SG2002 audio parameter cleanup: {release_error}");
+                }
+                self.config = None;
+                self.state = State::Open;
+                return Err(error);
+            }
+        };
+        self.config = Some(config);
+        self.state = State::Setup;
+        self.produced = 0;
+        self.consumed = 0;
+        self.origin = 0;
+        let frames = u64::from(config.buffer_frames);
+        let mut boundary = frames;
+        while boundary <= (i64::MAX as u64 - frames) / 2 {
+            boundary *= 2;
+        }
+        self.sw = SwParams {
+            tstamp_type: self.sw.tstamp_type,
+            period_step: 1,
+            avail_min: u64::from(config.period_frames),
+            start_threshold: 1,
+            stop_threshold: frames,
+            boundary,
+            ..SwParams::zeroed()
+        };
+        Ok(())
     }
 }

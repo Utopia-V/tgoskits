@@ -65,20 +65,28 @@ pub struct Config {
 }
 
 impl Config {
+    /// One hardware block: 32 transfers of four bytes, or 64 mono S16 frames.
+    pub const DMA_BLOCK_FRAMES: u32 = 64;
+
     /// Supported geometries, ordered by increasing rate and period size, then
-    /// decreasing buffer size. Each period contains whole 64-frame DMA blocks.
+    /// decreasing buffer size. A ring must hold a period, the in-flight DMA
+    /// block, and service margin before an unobserved lap becomes ambiguous.
     pub fn supported() -> impl Iterator<Item = Self> {
         [16_000, 48_000].into_iter().flat_map(|rate| {
-            (64..=8192).step_by(64).flat_map(move |period_frames| {
-                (2..=16).rev().filter_map(move |periods| {
-                    let buffer_frames = period_frames * periods;
-                    (buffer_frames <= 32768).then_some(Self {
-                        rate,
-                        period_frames,
-                        buffer_frames,
+            (Self::DMA_BLOCK_FRAMES..=8192)
+                .step_by(Self::DMA_BLOCK_FRAMES as usize)
+                .flat_map(move |period_frames| {
+                    (2..=16).rev().filter_map(move |periods| {
+                        let buffer_frames = period_frames * periods;
+                        (buffer_frames <= 32768
+                            && buffer_frames > period_frames + Self::DMA_BLOCK_FRAMES)
+                            .then_some(Self {
+                                rate,
+                                period_frames,
+                                buffer_frames,
+                            })
                     })
                 })
-            })
         })
     }
 }

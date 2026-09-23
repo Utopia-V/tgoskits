@@ -87,7 +87,9 @@ impl Stream {
                 self.avail_max = self.avail_max.max(avail);
                 // Reserve the DMA block currently being written. Never expose
                 // partially overwritten frames, even if stop_threshold is huge.
-                if avail <= u64::from(config.buffer_frames - 64) && avail < self.sw.stop_threshold {
+                if avail <= u64::from(config.buffer_frames - Config::DMA_BLOCK_FRAMES)
+                    && avail < self.sw.stop_threshold
+                {
                     return;
                 }
             }
@@ -448,6 +450,20 @@ impl Card {
             .spawn(move || service.service())
             .map_err(|_| StarryError::NoMemory)?;
         Ok(card)
+    }
+
+    fn change_stream<T>(
+        &self,
+        change: impl FnOnce(&mut Stream) -> StarryResult<T>,
+    ) -> StarryResult<T> {
+        let result = {
+            let mut stream = self.inner.lock();
+            change(&mut stream)
+        };
+        // Failed operations can also publish a terminal state. Notify after
+        // releasing the mutex; stopped DMA cannot supply a later interrupt.
+        self.wake_waiters();
+        result
     }
 
     fn wake_waiters(&self) {

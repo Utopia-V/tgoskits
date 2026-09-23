@@ -209,26 +209,36 @@ static void check_blocking_and_overrun(int fd, unsigned rate)
     CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_READI_FRAMES, &transfer) < 0 && errno == EINTR);
     CHECK(transfer.result == -EINTR);
     CHECK(sigaction(SIGALRM, &previous, NULL) == 0);
-    for (int free_params = 0; free_params < 2; ++free_params) {
+    for (int change = 0; change < 3; ++change) {
         CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_SW_PARAMS, &sw) == 0);
         CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_PREPARE, NULL) == 0);
         pid_t reader = fork();
         CHECK(reader >= 0);
         if (reader == 0) {
             alarm(5);
-            int result = pcm_ioctl(fd, SNDRV_PCM_IOCTL_READI_FRAMES, &transfer);
-            _exit(result < 0 && errno == EBADFD && transfer.result == -EBADFD ? 0 : 1);
+            long result = change == 1 ? syscall(SYS_read, fd, samples, sizeof(samples))
+                                     : pcm_ioctl(fd, SNDRV_PCM_IOCTL_READI_FRAMES, &transfer);
+            _exit(result < 0 && errno == EBADFD &&
+                  (change == 1 || transfer.result == -EBADFD) ? 0 : 1);
         }
         // No DMA is running: only a parameter-state change can release this read.
         wait_for_sleep(reader);
-        if (free_params) {
+        if (change == 1) {
             CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_HW_FREE, NULL) == 0);
         } else {
-            struct snd_pcm_hw_params params = hardware_params(rate);
-            CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_HW_PARAMS, &params) == 0);
+            struct snd_pcm_hw_params params = hardware_params(change == 2 ? 96000 : rate);
+            int result = pcm_ioctl(fd, SNDRV_PCM_IOCTL_HW_PARAMS, &params);
+            CHECK(change == 2 ? result < 0 && errno == EINVAL : result == 0);
         }
+        struct snd_pcm_status state = {0};
+        CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_STATUS, &state) == 0);
+        CHECK(state.state == (change == 0 ? SNDRV_PCM_STATE_SETUP : SNDRV_PCM_STATE_OPEN));
         int status;
-        CHECK(waitpid(reader, &status, 0) == reader);
+        pid_t reaped;
+        do {
+            reaped = waitpid(reader, &status, 0);
+        } while (reaped < 0 && errno == EINTR);
+        CHECK(reaped == reader);
         CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
         configure(fd, rate);
     }
@@ -239,15 +249,13 @@ static void check_blocking_and_overrun(int fd, unsigned rate)
     alarm(0);
     CHECK(fcntl(fd, F_SETFL, O_NONBLOCK) == 0);
     start_capture(fd);
+    struct snd_pcm_hw_params invalid = hardware_params(96000);
+    // State rejection precedes parameter validation and preserves the stream.
+    CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_HW_PARAMS, &invalid) < 0 && errno == EBADFD);
     struct pollfd wait = { .fd = fd }; // Observe overrun without consuming samples.
     CHECK(poll(&wait, 1, 6000) > 0 && (wait.revents & POLLERR));
     CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_READI_FRAMES, &transfer) < 0 && errno == EPIPE);
     CHECK(transfer.result == -EPIPE);
-    CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_DRAIN, NULL) < 0 && errno == EAGAIN);
-    struct snd_pcm_status status = {0};
-    CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_STATUS, &status) == 0);
-    CHECK(status.state == SNDRV_PCM_STATE_XRUN);
-    CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_READI_FRAMES, &transfer) < 0 && errno == EPIPE);
     CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_DROP, NULL) == 0);
     configure(fd, rate);
 }
@@ -255,25 +263,38 @@ static void check_blocking_and_overrun(int fd, unsigned rate)
 static void check_drain(int fd)
 {
     int16_t samples[BUFFER_FRAMES];
-    for (int discard = 0; discard < 2; ++discard) {
+    CHECK(fcntl(fd, F_SETFL, 0) == 0);
+    for (int scenario = 0; scenario < 3; ++scenario) {
         start_capture(fd);
-        struct pollfd ready = { .fd = fd, .events = POLLIN };
-        CHECK(poll(&ready, 1, 6000) > 0 && ready.revents == POLLIN);
-        if (discard)
+        struct pollfd ready = { .fd = fd, .events = scenario == 2 ? 0 : POLLIN };
+        CHECK(poll(&ready, 1, 6000) > 0);
+        CHECK(ready.revents == (scenario == 2 ? POLLERR : POLLIN));
+        if (scenario == 1)
             CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_DROP, NULL) == 0);
-        CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_DRAIN, NULL) < 0 && errno == EAGAIN);
+        CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_DRAIN, NULL) == 0);
         struct snd_pcm_status status = {0};
         CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_STATUS, &status) == 0);
-        CHECK(status.state == (discard ? SNDRV_PCM_STATE_SETUP : SNDRV_PCM_STATE_DRAINING));
+        const int states[] = { SNDRV_PCM_STATE_DRAINING, SNDRV_PCM_STATE_SETUP, SNDRV_PCM_STATE_XRUN };
+        CHECK(status.state == states[scenario]);
         struct snd_xferi transfer = { .buf = samples, .frames = BUFFER_FRAMES };
         int result = pcm_ioctl(fd, SNDRV_PCM_IOCTL_READI_FRAMES, &transfer);
-        if (discard)
-            CHECK(result < 0 && errno == EBADFD);
-        else
+        if (scenario == 0)
             CHECK(result == 0 && transfer.result > 0 && transfer.result < BUFFER_FRAMES);
+        else
+            CHECK(result < 0 && errno == (scenario == 1 ? EBADFD : EPIPE));
+        if (scenario == 2)
+            CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_DROP, NULL) == 0);
         CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_STATUS, &status) == 0);
         CHECK(status.state == SNDRV_PCM_STATE_SETUP);
     }
+    CHECK(fcntl(fd, F_SETFL, O_NONBLOCK) == 0);
+    CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_DRAIN, NULL) < 0 && errno == EAGAIN);
+    CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_PREPARE, NULL) == 0);
+    CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_DRAIN, NULL) < 0 && errno == EAGAIN);
+    struct snd_pcm_status prepared = {0};
+    CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_STATUS, &prepared) == 0);
+    CHECK(prepared.state == SNDRV_PCM_STATE_PREPARED);
+    CHECK(pcm_ioctl(fd, SNDRV_PCM_IOCTL_DROP, NULL) == 0);
 }
 
 static void check_geometry(int fd, unsigned rate)
