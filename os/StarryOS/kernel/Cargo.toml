@@ -49,6 +49,7 @@ sg2002-cvi-usb-camera = [
     "dep:sg200x-jpu",
 ]
 sg2002-audio = ["sg2002", "ax-driver/sg2002-audio", "dep:alsa-pcm-uapi"]
+uvc = ["dep:ax-media", "dep:media-uvc"]
 stack-guard-page = ["ax-runtime/stack-guard-page"]
 stack-protector = ["ax-runtime/stack-protector"]
 axtest = ["ax-runtime/fault-injection", "dep:axtest"]
@@ -97,6 +98,10 @@ k230-kpu = { workspace = true, optional = true }
 crab-usb.workspace = true
 usb-serial.workspace = true
 rdrive.workspace = true
+ax-media = { workspace = true, optional = true }
+media-uvc = { workspace = true, optional = true }
+ax-sync = { workspace = true, features = ["sleep"] }
+anyhow.workspace = true
 
 axbacktrace = { workspace = true }
 ax-cgroup = { workspace = true }
