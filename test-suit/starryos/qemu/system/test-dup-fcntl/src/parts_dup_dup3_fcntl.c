@@ -184,6 +184,29 @@ int parts_dup_dup3_fcntl(void)
 
     close(fd);
 
+    /* Directory status flags belong to the shared open file description. */
+    fd = openat(AT_FDCWD, "/tmp", O_RDONLY | O_DIRECTORY | O_NONBLOCK);
+    CHECK(fd >= 0, "打开非阻塞目录");
+    if (fd >= 0) {
+        int dir_flags = fcntl(fd, F_GETFL);
+        CHECK(dir_flags >= 0 && (dir_flags & O_NONBLOCK) != 0,
+              "目录 F_GETFL 保留打开时的 O_NONBLOCK");
+        int dir_dup = dup(fd);
+        CHECK(dir_dup >= 0, "复制目录描述符");
+        if (dir_dup >= 0) {
+            CHECK_RET(fcntl(dir_dup, F_SETFL, 0), 0, "通过副本清除目录 O_NONBLOCK");
+            dir_flags = fcntl(fd, F_GETFL);
+            CHECK(dir_flags >= 0 && (dir_flags & O_NONBLOCK) == 0,
+                  "目录副本共享清除后的状态");
+            CHECK_RET(fcntl(fd, F_SETFL, O_NONBLOCK), 0, "重新设置目录 O_NONBLOCK");
+            dir_flags = fcntl(dir_dup, F_GETFL);
+            CHECK(dir_flags >= 0 && (dir_flags & O_NONBLOCK) != 0,
+                  "目录副本共享重新设置的状态");
+            close(dir_dup);
+        }
+        close(fd);
+    }
+
     /* PART 18: fcntl F_GETFL 基础验证 */
 
     fd = openat(AT_FDCWD, TMPFILE, O_RDWR);
