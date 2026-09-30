@@ -6,9 +6,7 @@ pub(crate) mod audio;
 pub(crate) mod card0;
 #[cfg(feature = "rknpu")]
 pub(crate) mod card1;
-// The real contiguous coherent dma-heap is shared by every accelerator that
-// exchanges buffers (JPU / NPU / RGA).
-#[cfg(any(feature = "jpeg", feature = "rknpu", feature = "rga"))]
+// The coherent dma-heap is shared by GPUs and other DMA devices.
 mod dmaheap;
 mod drm;
 mod vblank;
@@ -27,6 +25,7 @@ pub(crate) mod r#loop;
 mod memtrack;
 #[cfg(feature = "jpeg")]
 mod mpp_service;
+mod net;
 #[cfg(feature = "sg2002")]
 mod pinmux;
 pub(super) mod pwm;
@@ -664,11 +663,9 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
     }
 
     // /dev/dma_heap — the real contiguous, DMA-coherent allocator that the
-    // accelerators share buffers from (zero-copy across JPU / NPU / RGA). Every
-    // heap name maps to the same allocator. Available under any accelerator
-    // feature, not just `jpeg`.
-    #[cfg(any(feature = "jpeg", feature = "rknpu", feature = "rga"))]
-    {
+    // accelerators and GPUs share buffers from. Every heap name maps to the
+    // same allocator. GPU PRIME import also accepts these direct-domain pages.
+    if ax_gpu::has_gpu() || cfg!(any(feature = "jpeg", feature = "rknpu", feature = "rga")) {
         let mut dma_heap_dir = DirMapping::new();
         for name in dmaheap::HEAP_NAMES {
             dma_heap_dir.add(
@@ -697,6 +694,10 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         "mqueue",
         SimpleDir::new_maker(fs.clone(), Arc::new(DirMapping::new())),
     );
+    root.add(
+        "net",
+        SimpleDir::new_maker(fs.clone(), Arc::new(net::net_dir(fs.clone()))),
+    );
     {
         let mut bus_dir = DirMapping::new();
         bus_dir.add(
@@ -706,33 +707,32 @@ fn builder(fs: Arc<SimpleFs>) -> DirMaker {
         root.add("bus", SimpleDir::new_maker(fs.clone(), Arc::new(bus_dir)));
     }
 
-    // /dev/dri/card0 — simpledrm-class DRM character device. Advertised
-    // unconditionally so libdrm/libudev see the DRM node even before
-    // there's a display device behind it.
-    let dri_card0 = card0::Card0::new();
-    let mut dri_dir = DirMapping::new();
     #[cfg(feature = "sg2002-audio")]
     if let Some(snd) = audio::devices(fs.clone()) {
         root.add("snd", SimpleDir::new_maker(fs.clone(), Arc::new(snd)));
     }
-    dri_dir.add(
-        "card0",
-        Device::new(
-            fs.clone(),
-            NodeType::CharacterDevice,
-            DeviceId::new(226, 0),
-            dri_card0.clone(),
-        ),
-    );
-    dri_dir.add(
-        "renderD128",
-        Device::new(
-            fs.clone(),
-            NodeType::CharacterDevice,
-            DeviceId::new(226, 128),
-            dri_card0,
-        ),
-    );
+    let mut dri_dir = DirMapping::new();
+    if ax_gpu::has_gpu() {
+        let dri_card0 = card0::Card0::new();
+        dri_dir.add(
+            "card0",
+            Device::new(
+                fs.clone(),
+                NodeType::CharacterDevice,
+                DeviceId::new(226, 0),
+                dri_card0.clone(),
+            ),
+        );
+        dri_dir.add(
+            "renderD128",
+            Device::new(
+                fs.clone(),
+                NodeType::CharacterDevice,
+                DeviceId::new(226, 128),
+                dri_card0,
+            ),
+        );
+    }
 
     #[cfg(feature = "rga")]
     root.add(
